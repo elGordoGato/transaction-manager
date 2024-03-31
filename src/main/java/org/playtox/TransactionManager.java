@@ -1,93 +1,94 @@
 package org.playtox;
 
+import lombok.RequiredArgsConstructor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.playtox.domain.Account;
+import org.playtox.domain.Transaction;
+import org.playtox.domain.exception.TransactionError;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
-import java.util.concurrent.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+@RequiredArgsConstructor
 public class TransactionManager {
-    private static final Logger logger = LogManager.getLogger(TransactionManager.class);
-    private static final int INITIAL_BALANCE = 10000;
-    private static final int NUMBER_OF_ACCOUNTS = 4;
-    private static final int NUMBER_OF_THREADS = 2;
-    private static final int NUMBER_OF_TRANSACTIONS = 30;
-    private static final Random random = new Random();
+    private final Logger logger = LogManager.getLogger(TransactionManager.class);
+    private final Random random = new Random();
+    private final int numberOfThreads;
+    private final int numberOfTransactions;
 
-    public void start() throws InterruptedException {
-        logger.info("Application started");
-        var context = new Object() {
-            boolean keepRunning = true;
-        };
-        ExecutorService executorService = Executors.newFixedThreadPool(NUMBER_OF_THREADS);
-        ConcurrentHashMap<Integer, Account> accounts = createAccounts();
+    public void start(List<Account> accounts) {
+        ExecutorService executorService = Executors.newFixedThreadPool(numberOfThreads);
         AtomicInteger transactionCount = new AtomicInteger();
 
-        for (int i = 0; i < NUMBER_OF_THREADS; i++) {
+        for (int i = 0; i < numberOfThreads; i++) {
             executorService.submit(() -> {
-                        while (context.keepRunning) {
-                            int sleepTime = 1000 + random.nextInt(1000);
-                            try {
-                                TimeUnit.MILLISECONDS.sleep(sleepTime);
-                                context.keepRunning = performTransaction(accounts, transactionCount);
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                            }
-                        }
-                    });
-        }
-                    executorService.shutdown();
-            try {
-                if (!executorService.awaitTermination(5, TimeUnit.MINUTES)) {
-                    logger.info("Total money: {}", accounts.values().stream().mapToInt(Account::getMoney).sum());
-                    executorService.shutdownNow();
+                while (true) {
+                    int sleepTime = 1000 + random.nextInt(1000);
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(sleepTime);
+                        if (transactionCount.get() < numberOfTransactions) {
+                            Transaction transaction = getRandomTransaction(accounts);
+                            performTransaction(transaction, transactionCount);
+                        } else break;
+                    } catch (InterruptedException e) {
+                        logger.error(e);
+                    }
                 }
-            } catch (InterruptedException e) {
+            });
+        }
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(1, TimeUnit.MINUTES)) {
                 executorService.shutdownNow();
             }
-        }
-
-        private static ConcurrentHashMap<Integer, Account> createAccounts () {
-            ConcurrentHashMap<Integer, Account> accounts = new ConcurrentHashMap<>(NUMBER_OF_ACCOUNTS);
-            for (int i = 0; i < TransactionManager.NUMBER_OF_ACCOUNTS; i++) {
-                accounts.put(i, new Account(i, INITIAL_BALANCE));
-            }
-            return accounts;
-        }
-
-        private static boolean performTransaction (ConcurrentHashMap < Integer, Account > accounts, AtomicInteger
-        transactionCount) throws InterruptedException {
-            if (transactionCount.getAndIncrement() >= NUMBER_OF_TRANSACTIONS) {
-                return false;
-            }
-            List<Integer> keysAsList = new ArrayList<>(accounts.keySet());
-            int indexFrom = keysAsList.get(random.nextInt(keysAsList.size()));
-            Account from = accounts.remove(indexFrom);
-            Account to;
-            do {
-                int indexTo = random.nextInt(keysAsList.size());
-                to = accounts.remove(indexTo);
-            } while (to == null);
-
-            int fromPrevBalance = from.getMoney();
-
-            int toPrevBalance = to.getMoney();
-            int amount = random.nextInt(from.getMoney());
-
-            if (from.withdraw(amount)) {
-                to.deposit(amount);
-                logger.info("""
-                                Transaction #{} completed:
-                                account {}: {} - {} = {}
-                                account {}: {} + {} = {}""",
-                        transactionCount.get(), from.getId(), fromPrevBalance, amount, from.getMoney(),
-                        to.getId(), toPrevBalance, amount, to.getMoney());
-            }
-            accounts.put(from.getId(), from);
-            accounts.put(to.getId(), to);
-            return true;
+        } catch (InterruptedException e) {
+            executorService.shutdownNow();
         }
     }
+
+    private Transaction getRandomTransaction(List<Account> accounts) {
+        int indexFrom = random.nextInt(accounts.size());
+        int indexTo;
+        do {
+            indexTo = random.nextInt(accounts.size());
+        } while (indexFrom == indexTo);
+
+
+        Account from = accounts.get(indexFrom);
+        Account to = accounts.get(indexTo);
+        int amount = random.nextInt(from.getMoney());
+        return new Transaction(from, to, amount);
+    }
+
+    private void performTransaction(Transaction transaction, AtomicInteger transactionCount) {
+        Account from = transaction.getFrom();
+        Account to = transaction.getTo();
+        int amount = transaction.getAmount();
+        try {
+            boolean isAccountsLocked = from.lock() && to.lock();
+            if (!isAccountsLocked) {
+                throw new TransactionError("Accounts is used by another transaction");
+            }
+            if (from.changeBalance(amount, true)) {
+                to.changeBalance(amount, false);
+                int transactionNumber = transactionCount.incrementAndGet();
+                logger.info("Transaction #{} completed", transactionNumber);
+            } else {
+                throw new TransactionError("Not enough money");
+            }
+        } catch (InterruptedException | TransactionError e) {
+            logger.error("Transaction of {} from {} to {} unsuccessful",
+                    amount, from.getId(), to.getId(), e);
+        } finally {
+            from.unlock();
+            to.unlock();
+        }
+
+
+    }
+}
