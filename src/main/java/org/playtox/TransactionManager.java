@@ -53,7 +53,7 @@ public class TransactionManager {
         }
     }
 
-    private Transaction getRandomTransaction(List<Account> accounts) {
+    Transaction getRandomTransaction(List<Account> accounts) {
         int indexFrom = random.nextInt(accounts.size());
         int indexTo;
         do {
@@ -67,7 +67,7 @@ public class TransactionManager {
         return new Transaction(from, to, amount);
     }
 
-    private void performTransaction(Transaction transaction, AtomicInteger transactionCount) {
+    public void performTransaction(Transaction transaction, AtomicInteger transactionCount) {
         Account from = transaction.getFrom();
         Account to = transaction.getTo();
         int amount = transaction.getAmount();
