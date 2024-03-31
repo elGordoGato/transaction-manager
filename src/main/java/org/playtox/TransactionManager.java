@@ -36,7 +36,9 @@ public class TransactionManager {
                             performTransaction(transaction, transactionCount);
                         } else break;
                     } catch (InterruptedException e) {
-                        logger.error(e);
+                        logger.error("Thread {} was interrupted",
+                                Thread.currentThread().getName(), e);
+                        break;
                     }
                 }
             });
